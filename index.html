@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>10x4 同步協作表格與 AI 賽評</title>
+  <title>Asin-楓之谷羅茱小工具1.0</title>
   
   <!-- 引入 Tailwind CSS 進行樣式設計 -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -176,7 +176,7 @@
       const resetGame = async () => {
         if (!window.confirm("確定要清除所有格子紀錄嗎？\n(您的顏色保留，表格會清空)")) return;
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
-        // 改為：只清除 cells，保留 players 資料
+        // 只清除 cells，保留 players 資料
         await updateDoc(docRef, { cells: {} });
       };
 
@@ -218,51 +218,37 @@
         );
       }
 
-      // 主遊戲畫面 (採用 h-[100dvh] 與 flexbox 自動縮放)
+      // 主遊戲畫面
       return (
         <div className="h-[100dvh] w-full flex flex-col p-2 font-sans relative box-border bg-gray-100 max-w-3xl mx-auto">
           
-          {/* 頂部：顏色與計分板 (縮小緊湊設計) */}
+          {/* 頂部：顏色與計分板 */}
           <div className="flex flex-row justify-between items-stretch gap-2 mb-2 shrink-0">
             {/* 我的顏色區塊 */}
-            <div className="flex flex-col justify-center bg-white px-2 py-1 rounded shadow border border-gray-200 min-w-[70px]">
-              <span className="text-[10px] text-gray-500">我的顏色</span>
-              <div className="flex items-center gap-1 mt-1">
-                <div className={`w-3 h-3 rounded-full ${myColor.className}`}></div>
-                <span className="font-bold text-sm text-gray-700">{myColor.name}</span>
+            <div className="flex flex-col justify-center bg-white px-3 py-2 rounded shadow border border-gray-200 shrink-0">
+              <span className="text-[10px] sm:text-xs text-gray-500 text-center">我的顏色</span>
+              <div className="flex items-center justify-center gap-1 mt-1">
+                <div className={`w-3 h-3 sm:w-4 sm:h-4 rounded-full ${myColor.className}`}></div>
+                <span className="font-bold text-sm sm:text-base text-gray-700">{myColor.name}</span>
               </div>
             </div>
 
-            {/* 計分板 */}
-            <div className="bg-white px-1 py-1 rounded shadow border border-gray-200 flex-1 overflow-x-auto">
-              <table className="text-[10px] sm:text-xs text-center mx-auto border-collapse w-full">
-                <thead>
-                  <tr>
-                    <th className="px-1 border-b text-gray-400 font-normal">列</th>
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
-                      <th key={r} className="px-[2px] border-b text-gray-500 font-medium">{r}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {COLORS.map(color => (
-                    <tr key={color.id}>
-                      <td className={`px-1 py-[1px] font-bold border-r border-gray-100 ${color.textClass}`}>
-                        {color.name.substring(0, 1)}
-                      </td>
-                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
-                        <td key={r} className="px-[2px] py-[1px] border-b border-gray-50 text-gray-600 font-semibold">
-                          {colorData[color.id][r] || <span className="text-gray-300">-</span>}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {/* 個人計分板 (刪除列標題，數字巨大化) */}
+            <div className="bg-white px-2 py-2 rounded shadow border border-gray-200 flex-1 overflow-x-auto flex flex-col justify-center">
+              <div className="text-[10px] sm:text-xs font-bold text-gray-400 mb-1 text-center border-b border-gray-100 pb-1">
+                已選取數字紀錄 (列1 至 列10)
+              </div>
+              <div className="flex justify-between items-center w-full min-w-[200px] mt-1 px-1">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
+                  <div key={r} className={`flex-1 text-center font-black text-xl sm:text-3xl leading-none ${myColor.textClass}`}>
+                    {colorData[myColor.id][r] || <span className="text-gray-200 font-normal text-sm sm:text-base">-</span>}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* 表格主體 (設定為 flex-1 自動填滿剩餘高度，不超出畫面) */}
+          {/* 表格主體 */}
           <div className="flex-1 bg-white rounded-lg shadow p-1 flex flex-col min-h-0 mb-2 border border-gray-200">
             <table className="w-full h-full border-collapse table-fixed">
               <thead>
@@ -289,14 +275,14 @@
                         <td key={colNum} className="p-[2px] sm:p-1 border border-gray-50">
                           <button
                             onClick={() => handleCellClick(rowNum, colNum)}
-                            className={`w-full h-full min-h-[20px] rounded shadow-sm transition-all duration-150 border ${
+                            className={`w-full h-full min-h-[20px] rounded shadow-sm transition-all duration-150 border flex items-center justify-center ${
                               cellColor 
                                 ? `${cellColor.className} border-transparent scale-95` 
                                 : 'bg-gray-50 border-dashed border-gray-200 hover:border-gray-400 hover:bg-gray-100'
                             }`}
                           >
                             {cellColor && (
-                              <span className="text-white font-bold opacity-50 select-none text-xs sm:text-sm">
+                              <span className="text-white font-bold opacity-60 select-none text-xs sm:text-base">
                                 {colNum}
                               </span>
                             )}
