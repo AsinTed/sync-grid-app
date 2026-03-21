@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>10x4 同步協作表格</title>
+  <title>10x4 同步協作表格與 AI 賽評</title>
   
   <!-- 引入 Tailwind CSS 進行樣式設計 -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -15,29 +15,30 @@
   <!-- 引入 Babel 讓瀏覽器可以直接編譯 JSX -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Firebase 模組化 SDK Import Map -->
+  <!-- Firebase 與 Gemini 模組化 SDK Import Map -->
   <script type="importmap">
     {
       "imports": {
         "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
         "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
-        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js",
+        "@google/generative-ai": "https://esm.run/@google/generative-ai"
       }
     }
   </script>
 </head>
-<body class="bg-gray-100">
+<body class="bg-gray-100 overflow-hidden">
   <div id="root"></div>
 
   <script type="text/babel" data-type="module">
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
     import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+    import { GoogleGenerativeAI } from '@google/generative-ai';
 
     const { useState, useEffect } = React;
 
-    // 1. 初始化 Firebase
-    // 如果您要在自己的伺服器上運行，請在這裡填入您的 Firebase 專案設定
+    // ⚠️ 請將您在 Firebase 控制台拿到的 Config 貼在這裡取代下面的內容
     const fallbackConfig = {
   apiKey: "AIzaSyD_U_Dz8Q4-2EYgipNYFlJs663NgTflSrs",
   authDomain: "test-89d8b.firebaseapp.com",
@@ -52,7 +53,6 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
-    // 獨立運行時的預設資料庫路徑 ID
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'standalone-sync-grid';
 
     // 定義顏色資料
@@ -67,8 +67,13 @@
       const [user, setUser] = useState(null);
       const [gameState, setGameState] = useState(null);
       const [loading, setLoading] = useState(true);
+      
+      const [geminiApiKey, setGeminiApiKey] = useState('');
+      const [aiAnalysis, setAiAnalysis] = useState('');
+      const [isAnalyzing, setIsAnalyzing] = useState(false);
+      const [showAI, setShowAI] = useState(false); // 控制 AI 區塊是否展開
 
-      // 2. 處理身分驗證
+      // 處理身分驗證
       useEffect(() => {
         const initAuth = async () => {
           try {
@@ -79,7 +84,6 @@
             }
           } catch (error) {
             console.error("登入失敗:", error);
-            // 若未設定 Firebase，暫時解除載入狀態以顯示錯誤或空白
             setLoading(false); 
           }
         };
@@ -92,23 +96,17 @@
         return () => unsubscribe();
       }, []);
 
-      // 3. 訂閱 Firestore 資料
+      // 訂閱 Firestore 資料
       useEffect(() => {
         if (!user) return;
-
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
-
         const unsubscribe = onSnapshot(docRef, 
           (docSnap) => {
             if (docSnap.exists()) {
               setGameState(docSnap.data());
               setLoading(false);
             } else {
-              // 初始化文檔
-              const initialState = {
-                cells: {}, // rowNum -> { colNum: colorId }
-                players: {} // userId -> colorId
-              };
+              const initialState = { cells: {}, players: {} };
               setDoc(docRef, initialState, { merge: true });
             }
           },
@@ -117,11 +115,9 @@
             setLoading(false);
           }
         );
-
         return () => unsubscribe();
       }, [user]);
 
-      // 判斷目前使用者的顏色
       const myColorId = gameState?.players?.[user?.uid];
       const myColor = COLORS.find(c => c.id === myColorId);
 
@@ -137,48 +133,76 @@
           Object.keys(gameState.cells[rowNum]).forEach(colNum => {
             const colorId = gameState.cells[rowNum][colNum];
             if (colorData[colorId]) {
-              colorData[colorId][rowNum] = colNum; // 儲存選中的欄位數字
+              colorData[colorId][rowNum] = colNum;
             }
           });
         });
       }
 
+      // 呼叫 Gemini AI 分析
+      const handleAIAnalysis = async () => {
+        if (!geminiApiKey) {
+          alert('請先輸入您的 Gemini API Key！');
+          return;
+        }
+        setIsAnalyzing(true);
+        setAiAnalysis('AI 正在觀看戰局並思考中...');
+        try {
+          const genAI = new GoogleGenerativeAI(geminiApiKey);
+          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+          let dataDescription = "目前 1 到 10 列的佔領狀況如下：\n";
+          COLORS.forEach(c => {
+            const marks = [];
+            for(let r=1; r<=10; r++) {
+              if (colorData[c.id][r]) marks.push(`第${r}列第${colorData[c.id][r]}欄`);
+            }
+            dataDescription += `${c.name}佔領了：${marks.length > 0 ? marks.join('、') : '目前掛零'}\n`;
+          });
+          const prompt = `你現在是一位幽默風趣、語氣激動的電競賽評。
+正在播報一場名為「十列四欄搶奪戰」的遊戲。
+以下是目前的戰況資料：
+${dataDescription}
+請用繁體中文給出約 50 到 80 字的趣味戰況播報，分析誰目前佔上風，或者誰在偷懶。語氣要生動好笑！`;
+          const result = await model.generateContent(prompt);
+          setAiAnalysis(result.response.text());
+        } catch (error) {
+          console.error(error);
+          setAiAnalysis('抱歉，賽評麥克風壞掉了（請檢查 API Key 是否正確）。');
+        } finally {
+          setIsAnalyzing(false);
+        }
+      };
+
       // 選擇顏色
       const claimColor = async (colorId) => {
         if (!user || !gameState) return;
-        
         const isTaken = Object.values(gameState.players).includes(colorId);
         if (isTaken) return;
-
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
         const newPlayers = { ...gameState.players, [user.uid]: colorId };
-        
         await updateDoc(docRef, { players: newPlayers });
       };
 
       // 點擊儲存格
       const handleCellClick = async (rowNum, colNum) => {
         if (!user || !gameState || !myColorId) return;
-
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
         const newCells = { ...gameState.cells };
         if (!newCells[rowNum]) newCells[rowNum] = {};
 
+        // 點擊已選中的格子則取消
         if (newCells[rowNum][colNum] === myColorId) {
           delete newCells[rowNum][colNum];
         } else {
+          // 移除同一列自己舊的標記
           Object.keys(newCells[rowNum]).forEach(c => {
-            if (newCells[rowNum][c] === myColorId) {
-              delete newCells[rowNum][c];
-            }
+            if (newCells[rowNum][c] === myColorId) delete newCells[rowNum][c];
           });
+          // 蓋上新標記
           newCells[rowNum][colNum] = myColorId;
         }
 
-        if (Object.keys(newCells[rowNum]).length === 0) {
-          delete newCells[rowNum];
-        }
-
+        if (Object.keys(newCells[rowNum]).length === 0) delete newCells[rowNum];
         await updateDoc(docRef, { cells: newCells });
       };
 
@@ -187,28 +211,18 @@
         if (!window.confirm("確定要清除所有紀錄並重置表格嗎？")) return;
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
         await updateDoc(docRef, { cells: {}, players: {} });
+        setAiAnalysis('');
       };
 
-      if (loading) {
-        return <div className="flex justify-center items-center h-screen text-xl text-gray-600">連線中... </div>;
-      }
+      if (loading) return <div className="flex justify-center items-center h-screen text-gray-600">連線中...</div>;
 
-      // 如果未設定 Firebase (自己主機上沒填 config)，會卡在這裡
-      if (!user && !loading) {
-         return (
-           <div className="flex flex-col justify-center items-center h-screen text-center p-4">
-             <h1 className="text-2xl font-bold text-red-500 mb-4">無法連線到資料庫</h1>
-             <p className="text-gray-600">如果您是自行部署此網頁，請確保已在 HTML 檔案中的 <code>fallbackConfig</code> 填入您的 Firebase 設定。</p>
-           </div>
-         )
-      }
-
+      // 顏色選擇畫面
       if (!myColorId) {
         return (
-          <div className="flex flex-col justify-center items-center h-screen bg-gray-50 p-4">
-            <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
-              <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">選擇你的專屬顏色</h2>
-              <div className="grid grid-cols-2 gap-4">
+          <div className="flex flex-col justify-center items-center h-[100dvh] bg-gray-50 p-4">
+            <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
+              <h2 className="text-xl font-bold mb-4 text-center text-gray-800">選擇你的專屬顏色</h2>
+              <div className="grid grid-cols-2 gap-3">
                 {COLORS.map(color => {
                   const isTaken = Object.values(gameState?.players || {}).includes(color.id);
                   return (
@@ -216,7 +230,7 @@
                       key={color.id}
                       onClick={() => claimColor(color.id)}
                       disabled={isTaken}
-                      className={`py-4 rounded-lg text-white font-bold text-lg shadow-md transition-transform transform hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 disabled:cursor-not-allowed ${color.className}`}
+                      className={`py-3 rounded-lg text-white font-bold shadow transition-transform active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed ${color.className}`}
                     >
                       {color.name} {isTaken && '(已被選)'}
                     </button>
@@ -228,35 +242,40 @@
         );
       }
 
+      // 主遊戲畫面 (採用 h-[100dvh] 與 flexbox 自動縮放)
       return (
-        <div className="min-h-screen flex flex-col items-center py-6 px-4 font-sans relative">
+        <div className="h-[100dvh] w-full flex flex-col p-2 font-sans relative box-border bg-gray-100 max-w-3xl mx-auto">
           
-          <div className="w-full max-w-2xl flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4 relative z-10">
-            <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-lg shadow shrink-0">
-              <span className="font-semibold text-gray-700">我的顏色:</span>
-              <div className={`w-6 h-6 rounded-full shadow-inner ${myColor.className}`}></div>
-              <span className="font-medium text-gray-600">{myColor.name}</span>
+          {/* 頂部：顏色與計分板 (縮小緊湊設計) */}
+          <div className="flex flex-row justify-between items-stretch gap-2 mb-2 shrink-0">
+            {/* 我的顏色區塊 */}
+            <div className="flex flex-col justify-center bg-white px-2 py-1 rounded shadow border border-gray-200 min-w-[70px]">
+              <span className="text-[10px] text-gray-500">我的顏色</span>
+              <div className="flex items-center gap-1 mt-1">
+                <div className={`w-3 h-3 rounded-full ${myColor.className}`}></div>
+                <span className="font-bold text-sm text-gray-700">{myColor.name}</span>
+              </div>
             </div>
 
-            <div className="bg-white p-3 rounded-lg shadow-md border border-gray-200 overflow-x-auto w-full">
-              <div className="text-sm font-bold text-gray-500 mb-2 border-b pb-1 text-center">各色每列標記紀錄 (列 1~10)</div>
-              <table className="text-xs md:text-sm text-center mx-auto border-collapse">
+            {/* 計分板 */}
+            <div className="bg-white px-1 py-1 rounded shadow border border-gray-200 flex-1 overflow-x-auto">
+              <table className="text-[10px] sm:text-xs text-center mx-auto border-collapse w-full">
                 <thead>
                   <tr>
-                    <th className="px-2 border-b text-gray-400 font-normal">列</th>
+                    <th className="px-1 border-b text-gray-400 font-normal">列</th>
                     {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
-                      <th key={r} className="px-1 md:px-2 border-b text-gray-500 font-medium">{r}</th>
+                      <th key={r} className="px-[2px] border-b text-gray-500 font-medium">{r}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {COLORS.map(color => (
                     <tr key={color.id}>
-                      <td className={`px-2 py-1 font-bold border-r border-gray-100 ${color.textClass}`}>
+                      <td className={`px-1 py-[1px] font-bold border-r border-gray-100 ${color.textClass}`}>
                         {color.name.substring(0, 1)}
                       </td>
                       {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
-                        <td key={r} className="px-1 md:px-2 py-1 border-b border-gray-50 text-gray-600 font-semibold">
+                        <td key={r} className="px-[2px] py-[1px] border-b border-gray-50 text-gray-600 font-semibold">
                           {colorData[color.id][r] || <span className="text-gray-300">-</span>}
                         </td>
                       ))}
@@ -267,13 +286,14 @@
             </div>
           </div>
 
-          <div className="w-full max-w-2xl bg-white rounded-xl shadow-lg p-2 md:p-6 overflow-x-auto">
-            <table className="w-full border-collapse">
+          {/* 表格主體 (設定為 flex-1 自動填滿剩餘高度，不超出畫面) */}
+          <div className="flex-1 bg-white rounded-lg shadow p-1 flex flex-col min-h-0 mb-2 border border-gray-200">
+            <table className="w-full h-full border-collapse table-fixed">
               <thead>
-                <tr>
-                  <th className="w-8 md:w-12 p-1 md:p-2 border-b-2 border-gray-300"></th>
+                <tr className="h-6 sm:h-8">
+                  <th className="w-8 sm:w-12 border-b-2 border-gray-200"></th>
                   {[1, 2, 3, 4].map(colHeader => (
-                    <th key={colHeader} className="p-2 md:p-3 text-center text-lg md:text-xl font-bold text-gray-700 border-b-2 border-gray-300 w-1/4">
+                    <th key={colHeader} className="text-center text-sm sm:text-lg font-bold text-gray-700 border-b-2 border-gray-200">
                       {colHeader}
                     </th>
                   ))}
@@ -282,7 +302,7 @@
               <tbody>
                 {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((rowNum) => (
                   <tr key={rowNum} className="hover:bg-gray-50 transition-colors">
-                    <td className="p-1 md:p-2 text-center font-bold text-gray-400 border-r border-gray-100">
+                    <td className="text-center font-bold text-gray-400 border-r border-gray-100 text-xs sm:text-sm">
                       {rowNum}
                     </td>
                     {[1, 2, 3, 4].map(colNum => {
@@ -290,17 +310,17 @@
                       const cellColor = COLORS.find(c => c.id === cellColorId);
                       
                       return (
-                        <td key={colNum} className="p-1 md:p-2 border border-gray-100">
+                        <td key={colNum} className="p-[2px] sm:p-1 border border-gray-50">
                           <button
                             onClick={() => handleCellClick(rowNum, colNum)}
-                            className={`w-full aspect-square rounded-md shadow-sm transition-all duration-200 border-2 ${
+                            className={`w-full h-full min-h-[20px] rounded shadow-sm transition-all duration-150 border ${
                               cellColor 
                                 ? `${cellColor.className} border-transparent scale-95` 
                                 : 'bg-gray-50 border-dashed border-gray-200 hover:border-gray-400 hover:bg-gray-100'
                             }`}
                           >
                             {cellColor && (
-                              <span className="text-white font-bold opacity-50 select-none text-sm md:text-base">
+                              <span className="text-white font-bold opacity-50 select-none text-xs sm:text-sm">
                                 {colNum}
                               </span>
                             )}
@@ -314,10 +334,51 @@
             </table>
           </div>
 
-          <div className="mt-8 text-sm text-gray-400 mb-8">
-            <button onClick={resetGame} className="underline hover:text-red-500 transition-colors">
-              重置表格 (清除所有資料)
-            </button>
+          {/* 底部功能區 (AI 摺疊面板 與 重置按鈕) */}
+          <div className="shrink-0 flex flex-col gap-2">
+            {/* AI 賽評區塊 */}
+            <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded shadow border border-blue-100">
+              <button 
+                onClick={() => setShowAI(!showAI)}
+                className="w-full text-left font-bold text-gray-700 p-2 text-sm flex justify-between items-center"
+              >
+                <span>🤖 AI 賽評戰況播報</span>
+                <span className="text-blue-500 text-xs">{showAI ? '▲ 收起' : '▼ 展開'}</span>
+              </button>
+              
+              {showAI && (
+                <div className="p-2 pt-0 border-t border-blue-100/50">
+                  <div className="flex flex-col sm:flex-row gap-2 mb-2 mt-2">
+                    <input 
+                      type="password" 
+                      placeholder="請貼上 Gemini API Key" 
+                      value={geminiApiKey}
+                      onChange={(e) => setGeminiApiKey(e.target.value)}
+                      className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    />
+                    <button 
+                      onClick={handleAIAnalysis}
+                      disabled={isAnalyzing}
+                      className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-1 px-3 rounded transition-colors disabled:bg-blue-300 whitespace-nowrap"
+                    >
+                      {isAnalyzing ? '分析中...' : '呼叫賽評！'}
+                    </button>
+                  </div>
+                  {aiAnalysis && (
+                    <div className="bg-white p-2 rounded shadow-inner text-gray-700 text-xs sm:text-sm whitespace-pre-wrap max-h-32 overflow-y-auto">
+                      {aiAnalysis}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 重置按鈕 */}
+            <div className="text-xs text-gray-400 text-right pb-1">
+              <button onClick={resetGame} className="underline hover:text-red-500 transition-colors">
+                重置表格資料
+              </button>
+            </div>
           </div>
 
         </div>
