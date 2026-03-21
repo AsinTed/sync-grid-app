@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>10x4 同步協作表格</title>
+  
+  <!-- 引入 Tailwind CSS 進行樣式設計 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 引入 React 與 ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- 引入 Babel 讓瀏覽器可以直接編譯 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase 模組化 SDK Import Map -->
+  <script type="importmap">
+    {
+      "imports": {
+        "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-100">
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import { initializeApp } from 'firebase/app';
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+    import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+
+    const { useState, useEffect } = React;
+
+    // 1. 初始化 Firebase
+    // 如果您要在自己的伺服器上運行，請在這裡填入您的 Firebase 專案設定
+    const fallbackConfig = {
+  apiKey: "AIzaSyD_U_Dz8Q4-2EYgipNYFlJs663NgTflSrs",
+  authDomain: "test-89d8b.firebaseapp.com",
+  projectId: "test-89d8b",
+  storageBucket: "test-89d8b.firebasestorage.app",
+  messagingSenderId: "169319155879",
+  appId: "1:169319155879:web:2ac0eedeb47fd948aaf382",
+  measurementId: "G-XCCZP1YHB7"
+};
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : fallbackConfig;
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    // 獨立運行時的預設資料庫路徑 ID
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'standalone-sync-grid';
+
+    // 定義顏色資料
+    const COLORS = [
+      { id: 'green', name: '綠色', className: 'bg-green-500', textClass: 'text-green-600' },
+      { id: 'purple', name: '紫色', className: 'bg-purple-500', textClass: 'text-purple-600' },
+      { id: 'yellow', name: '黃色', className: 'bg-yellow-400', textClass: 'text-yellow-600' },
+      { id: 'blue', name: '藍色', className: 'bg-blue-500', textClass: 'text-blue-600' }
+    ];
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [gameState, setGameState] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      // 2. 處理身分驗證
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            console.error("登入失敗:", error);
+            // 若未設定 Firebase，暫時解除載入狀態以顯示錯誤或空白
+            setLoading(false); 
+          }
+        };
+        initAuth();
+
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+          setUser(currentUser);
+        });
+
+        return () => unsubscribe();
+      }, []);
+
+      // 3. 訂閱 Firestore 資料
+      useEffect(() => {
+        if (!user) return;
+
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
+
+        const unsubscribe = onSnapshot(docRef, 
+          (docSnap) => {
+            if (docSnap.exists()) {
+              setGameState(docSnap.data());
+              setLoading(false);
+            } else {
+              // 初始化文檔
+              const initialState = {
+                cells: {}, // rowNum -> { colNum: colorId }
+                players: {} // userId -> colorId
+              };
+              setDoc(docRef, initialState, { merge: true });
+            }
+          },
+          (error) => {
+            console.error("讀取資料錯誤:", error);
+            setLoading(false);
+          }
+        );
+
+        return () => unsubscribe();
+      }, [user]);
+
+      // 判斷目前使用者的顏色
+      const myColorId = gameState?.players?.[user?.uid];
+      const myColor = COLORS.find(c => c.id === myColorId);
+
+      // 擷取每個顏色在每一列所選擇的數字
+      const colorData = {};
+      COLORS.forEach(c => {
+        colorData[c.id] = {};
+        for(let r = 1; r <= 10; r++) colorData[c.id][r] = null;
+      });
+
+      if (gameState?.cells) {
+        Object.keys(gameState.cells).forEach(rowNum => {
+          Object.keys(gameState.cells[rowNum]).forEach(colNum => {
+            const colorId = gameState.cells[rowNum][colNum];
+            if (colorData[colorId]) {
+              colorData[colorId][rowNum] = colNum; // 儲存選中的欄位數字
+            }
+          });
+        });
+      }
+
+      // 選擇顏色
+      const claimColor = async (colorId) => {
+        if (!user || !gameState) return;
+        
+        const isTaken = Object.values(gameState.players).includes(colorId);
+        if (isTaken) return;
+
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
+        const newPlayers = { ...gameState.players, [user.uid]: colorId };
+        
+        await updateDoc(docRef, { players: newPlayers });
+      };
+
+      // 點擊儲存格
+      const handleCellClick = async (rowNum, colNum) => {
+        if (!user || !gameState || !myColorId) return;
+
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
+        const newCells = { ...gameState.cells };
+        if (!newCells[rowNum]) newCells[rowNum] = {};
+
+        if (newCells[rowNum][colNum] === myColorId) {
+          delete newCells[rowNum][colNum];
+        } else {
+          Object.keys(newCells[rowNum]).forEach(c => {
+            if (newCells[rowNum][c] === myColorId) {
+              delete newCells[rowNum][c];
+            }
+          });
+          newCells[rowNum][colNum] = myColorId;
+        }
+
+        if (Object.keys(newCells[rowNum]).length === 0) {
+          delete newCells[rowNum];
+        }
+
+        await updateDoc(docRef, { cells: newCells });
+      };
+
+      // 重置遊戲
+      const resetGame = async () => {
+        if (!window.confirm("確定要清除所有紀錄並重置表格嗎？")) return;
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'syncGrid', 'current');
+        await updateDoc(docRef, { cells: {}, players: {} });
+      };
+
+      if (loading) {
+        return <div className="flex justify-center items-center h-screen text-xl text-gray-600">連線中... </div>;
+      }
+
+      // 如果未設定 Firebase (自己主機上沒填 config)，會卡在這裡
+      if (!user && !loading) {
+         return (
+           <div className="flex flex-col justify-center items-center h-screen text-center p-4">
+             <h1 className="text-2xl font-bold text-red-500 mb-4">無法連線到資料庫</h1>
+             <p className="text-gray-600">如果您是自行部署此網頁，請確保已在 HTML 檔案中的 <code>fallbackConfig</code> 填入您的 Firebase 設定。</p>
+           </div>
+         )
+      }
+
+      if (!myColorId) {
+        return (
+          <div className="flex flex-col justify-center items-center h-screen bg-gray-50 p-4">
+            <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+              <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">選擇你的專屬顏色</h2>
+              <div className="grid grid-cols-2 gap-4">
+                {COLORS.map(color => {
+                  const isTaken = Object.values(gameState?.players || {}).includes(color.id);
+                  return (
+                    <button
+                      key={color.id}
+                      onClick={() => claimColor(color.id)}
+                      disabled={isTaken}
+                      className={`py-4 rounded-lg text-white font-bold text-lg shadow-md transition-transform transform hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 disabled:cursor-not-allowed ${color.className}`}
+                    >
+                      {color.name} {isTaken && '(已被選)'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen flex flex-col items-center py-6 px-4 font-sans relative">
+          
+          <div className="w-full max-w-2xl flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4 relative z-10">
+            <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-lg shadow shrink-0">
+              <span className="font-semibold text-gray-700">我的顏色:</span>
+              <div className={`w-6 h-6 rounded-full shadow-inner ${myColor.className}`}></div>
+              <span className="font-medium text-gray-600">{myColor.name}</span>
+            </div>
+
+            <div className="bg-white p-3 rounded-lg shadow-md border border-gray-200 overflow-x-auto w-full">
+              <div className="text-sm font-bold text-gray-500 mb-2 border-b pb-1 text-center">各色每列標記紀錄 (列 1~10)</div>
+              <table className="text-xs md:text-sm text-center mx-auto border-collapse">
+                <thead>
+                  <tr>
+                    <th className="px-2 border-b text-gray-400 font-normal">列</th>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
+                      <th key={r} className="px-1 md:px-2 border-b text-gray-500 font-medium">{r}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {COLORS.map(color => (
+                    <tr key={color.id}>
+                      <td className={`px-2 py-1 font-bold border-r border-gray-100 ${color.textClass}`}>
+                        {color.name.substring(0, 1)}
+                      </td>
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => (
+                        <td key={r} className="px-1 md:px-2 py-1 border-b border-gray-50 text-gray-600 font-semibold">
+                          {colorData[color.id][r] || <span className="text-gray-300">-</span>}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="w-full max-w-2xl bg-white rounded-xl shadow-lg p-2 md:p-6 overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="w-8 md:w-12 p-1 md:p-2 border-b-2 border-gray-300"></th>
+                  {[1, 2, 3, 4].map(colHeader => (
+                    <th key={colHeader} className="p-2 md:p-3 text-center text-lg md:text-xl font-bold text-gray-700 border-b-2 border-gray-300 w-1/4">
+                      {colHeader}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((rowNum) => (
+                  <tr key={rowNum} className="hover:bg-gray-50 transition-colors">
+                    <td className="p-1 md:p-2 text-center font-bold text-gray-400 border-r border-gray-100">
+                      {rowNum}
+                    </td>
+                    {[1, 2, 3, 4].map(colNum => {
+                      const cellColorId = gameState?.cells?.[rowNum]?.[colNum];
+                      const cellColor = COLORS.find(c => c.id === cellColorId);
+                      
+                      return (
+                        <td key={colNum} className="p-1 md:p-2 border border-gray-100">
+                          <button
+                            onClick={() => handleCellClick(rowNum, colNum)}
+                            className={`w-full aspect-square rounded-md shadow-sm transition-all duration-200 border-2 ${
+                              cellColor 
+                                ? `${cellColor.className} border-transparent scale-95` 
+                                : 'bg-gray-50 border-dashed border-gray-200 hover:border-gray-400 hover:bg-gray-100'
+                            }`}
+                          >
+                            {cellColor && (
+                              <span className="text-white font-bold opacity-50 select-none text-sm md:text-base">
+                                {colNum}
+                              </span>
+                            )}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-8 text-sm text-gray-400 mb-8">
+            <button onClick={resetGame} className="underline hover:text-red-500 transition-colors">
+              重置表格 (清除所有資料)
+            </button>
+          </div>
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
